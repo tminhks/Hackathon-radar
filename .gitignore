@@ -1,0 +1,28 @@
+# Dữ liệu cá nhân / cache lúc chạy (user_state.json chứa Gemini API key)
+data/
+
+# Biến môi trường / secrets
+.env
+.env.*
+.dev.vars
+*.pem
+*.key
+
+# File build (phát hành qua GitHub Releases nếu cần)
+*.exe
+*.dll
+*.pdb
+bin/
+obj/
+
+# Dependencies & log
+node_modules/
+npm-debug.log*
+*.log
+
+# Rác hệ điều hành / editor
+Thumbs.db
+Desktop.ini
+.DS_Store
+.vscode/
+.idea/

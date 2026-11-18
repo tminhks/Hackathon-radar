@@ -1,0 +1,9 @@
+{
+  "name": "global-hackathon-radar",
+  "version": "1.0.0",
+  "description": "Radar Săn Hackathon Toàn Cầu — Tự động tổng hợp thời gian thực từ Devpost, MLH, ETHGlobal, Devfolio, Unstop, DoraHacks",
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs"
+  }
+}

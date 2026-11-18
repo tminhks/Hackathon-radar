@@ -1,0 +1,16 @@
+{
+  "name": "Radar — Global Hackathon Discovery",
+  "short_name": "Radar",
+  "description": "Real-time global hackathon discovery and desktop notification radar.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#070709",
+  "theme_color": "#070709",
+  "icons": [
+    {
+      "src": "/assets/radar-icon.png",
+      "sizes": "256x256",
+      "type": "image/png"
+    }
+  ]
+}
