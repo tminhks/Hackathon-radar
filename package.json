@@ -1,9 +1,56 @@
 {
   "name": "global-hackathon-radar",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Radar Săn Hackathon Toàn Cầu — Tự động tổng hợp thời gian thực từ Devpost, MLH, ETHGlobal, Devfolio, Unstop, DoraHacks",
   "type": "module",
+  "main": "electron/main.cjs",
   "scripts": {
-    "start": "node server.mjs"
+    "start": "node server.mjs",
+    "dev:app": "electron .",
+    "dist": "electron-builder --win portable"
+  },
+  "devDependencies": {
+    "electron": "^38.0.0",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.hackathonradar.app",
+    "productName": "Hackathon Radar",
+    "files": [
+      "electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "server.mjs",
+        "to": "server/server.mjs"
+      },
+      {
+        "from": "src",
+        "to": "server/src"
+      },
+      {
+        "from": "public",
+        "to": "server/public"
+      },
+      {
+        "from": "radar-icon.ico",
+        "to": "radar-icon.ico"
+      }
+    ],
+    "win": {
+      "target": "portable",
+      "icon": "radar-icon.ico"
+    },
+    "portable": {
+      "artifactName": "HackathonRadar.exe"
+    },
+    "directories": {
+      "output": "dist"
+    }
+  },
+  "allowScripts": {
+    "electron@38.8.6": true,
+    "electron-winstaller@5.4.0": true
   }
 }

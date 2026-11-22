@@ -213,6 +213,38 @@ export function classifyModeAndLocation({ isOnline, locationText = '', country =
   return { mode, isVietnam, hasTravelGrant, displayLocation };
 }
 
+// ============================================================================
+// PERSONAL ELIGIBILITY RULES (Minh — sinh viên năm 2 ở Việt Nam)
+// Chắc chắn loại: (1) giải chỉ dành cho học sinh cấp 3,
+// (2) giải giới hạn quốc gia không mở cho VN,
+// (3) giải thi trực tiếp ở nước ngoài mà không hỗ trợ vé (bay > ~5tr VND).
+// ============================================================================
+const HIGH_SCHOOL_RE = /high[\s-]?school|k[\s-]?12\b|secondary school|middle school|trung học phổ thông|học sinh|aged?\s*1[0-8]\b|under\s*18|ages?\s*1[0-8]\b|hack club|pre-?university|junior hack/i;
+const ADULT_OK_RE = /university|college|undergrad|postgrad|sinh viên|đại học|all students|open to all|everyone|anyone|18\+|adults?|professionals?|all levels|all ages/i;
+const COUNTRY_RESTRICT_RE = /only (open to|for|available to|residents? of|citizens? of|students (of|in|from)|participants? (of|in|from))|residents? of [^.]{0,80} only|citizens? of [^.]{0,80} only|\b(?:us|usa|u\.s\.|united states|india|canada|uk|europe|eu|australia|singapore|japan|korea|china)[\s/&,-]{0,12}(only|residents?|citizens?)\b|domestic (students|residents|applicants|participants) only|eligible countries?|must (be|reside) (a resident |citizen )?(of|in) [^.]{0,80}/i;
+const GLOBAL_OK_RE = /vietnam|việt nam|global|worldwide|all countries|any country|international|everywhere|online|virtual|remote|open to all|all nations/i;
+const FULLY_FUNDED_RE = /all[\s-]?expenses?|fully[\s-]?funded|flights? (reimbursement|covered|provided|paid)|travel (scholarship|stipend|reimbursement|grant|support|allowance|sponsorship)s?|hacker pack|bao (vé|trọn gói)|free (stay|accommodation|flights?|travel)|accommodation (provided|covered|included)|financial aid for travel/i;
+
+export function computeEligibility(item) {
+  const blob = `${item.title} ${item.summary} ${(item.tags || []).join(' ')} ${item.location || ''} ${item.organizer || ''}`.toLowerCase();
+
+  if (HIGH_SCHOOL_RE.test(blob) && !ADULT_OK_RE.test(blob)) {
+    return { blocked: true, reason: 'Chỉ dành cho học sinh cấp 3' };
+  }
+  if (COUNTRY_RESTRICT_RE.test(blob) && !GLOBAL_OK_RE.test(blob)) {
+    return { blocked: true, reason: 'Giới hạn quốc gia — không mở cho Việt Nam' };
+  }
+  if (
+    item.mode === 'international' &&
+    !item.hasTravelGrant &&
+    !item.isVietnam &&
+    !/\b(online|virtual|remote|hybrid)\b/i.test(blob)
+  ) {
+    return { blocked: true, reason: 'Thi trực tiếp nước ngoài, không hỗ trợ vé máy bay' };
+  }
+  return { blocked: false, reason: null };
+}
+
 export function computeCompetitionAndScore(item) {
   const regs = typeof item.registrationsCount === 'number' ? item.registrationsCount : null;
   let competitionLevel = 'unknown'; // low | medium | high | unknown
@@ -295,10 +327,21 @@ function finalizeHackathon(raw) {
     summary: raw.summary ? stripHtml(raw.summary).slice(0, 280) : ''
   };
 
-  return {
-    ...item,
-    ...computeCompetitionAndScore(item)
-  };
+  const scored = { ...item, ...computeCompetitionAndScore(item) };
+  const elig = computeEligibility(scored);
+  scored.blocked = elig.blocked;
+  scored.blockedReason = elig.reason;
+  scored.fullyFunded = FULLY_FUNDED_RE.test(
+    `${item.title} ${item.summary} ${(item.tags || []).join(' ')}`
+  );
+  // Ưu tiên của Minh: đi nước ngoài có hỗ trợ vé / trọn gói / tại VN
+  if (scored.mode === 'international' && scored.hasTravelGrant) {
+    scored.opportunityScore = Math.min(99, scored.opportunityScore + 10);
+  }
+  if (scored.fullyFunded) {
+    scored.opportunityScore = Math.min(99, scored.opportunityScore + 8);
+  }
+  return scored;
 }
 
 // ============================================================================
@@ -754,6 +797,147 @@ async function fetchDoraHacks() {
 }
 
 // ============================================================================
+// 7. REDDIT (r/hackathon + r/hackathons) — via pullpush.io mirror
+//    Reddit's own JSON endpoints all require login now; pullpush.io mirrors
+//    public submissions. Honest rule: a post is only listed when it carries a
+//    real external registration link — never a Reddit/chat/social link.
+// ============================================================================
+const REDDIT_SUBS = ['hackathon', 'hackathons'];
+const REDDIT_MAX_AGE_MS = 60 * 24 * 3600 * 1000;
+const NON_LISTING_RE = /\b(looking for|teammate|team ?up|join (my|our) team|lft\b|recruit|weekly thread|mod ?post)\b/i;
+const SKIP_FLAIR_RE = /meta|discussion|mod|weekly|question/i;
+const HACKATHON_WORD_RE = /\b(hackathon|hack-?a-?thon|datathon|buildathon|ideathon|game ?jam|makeathon|codefest|hack ?days?|devpost|devfolio|unstop|mlh|ethglobal|dorahacks)\b/i;
+const SPAM_TITLE_RE = /hire a hacker|spy on|recover.{0,25}(crypto|fund|account|money|wallet)|pig butchering|cheating (husband|wife|spouse|partner)|hack (your|their|his|her|my) (partner|spouse|whatsapp|instagram|snapchat|account|phone)/i;
+const NON_REG_LINK_RE = /reddit\.com|redd\.it|youtube\.com|youtu\.be|instagram\.com|tiktok\.com|t\.me\/|telegram\.|wa\.me\/|chat\.whatsapp\.com|discord\.gg|discord\.com\/invite|twitter\.com|x\.com|facebook\.com|fb\.com|fb\.me|linkedin\.com|medium\.com|substack\.com|linktr\.ee|patreon\.com|open\.spotify\.com|twitch\.tv|kickstarter\.com|gofundme\.com/i;
+
+function parseRedditDate(text = '') {
+  const now = new Date();
+  let m = text.match(/\b(20\d{2})[-/.](0?[1-9]|1[0-2])[-/.](0?[1-9]|[12]\d|3[01])\b/);
+  if (m) {
+    const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 23, 59, 59);
+    return isNaN(d) ? null : d.toISOString();
+  }
+  const monthNames = 'january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec';
+  m = text.match(new RegExp(`\\b(${monthNames})\\.?\\s+(\\d{1,2})(?:\\s*[-–—]\\s*\\d{1,2})?(?:,?\\s*(20\\d{2}))?`, 'i'));
+  let monStr, day, yr;
+  if (m) {
+    monStr = m[1]; day = Number(m[2]); yr = m[3];
+  } else {
+    m = text.match(new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(${monthNames})\\b(?:,?\\s*(20\\d{2}))?`, 'i'));
+    if (!m) return null;
+    day = Number(m[1]); monStr = m[2]; yr = m[3];
+  }
+  const mo = MONTHS[monStr.slice(0, 3).toLowerCase()];
+  if (mo === undefined || day < 1 || day > 31) return null;
+  let d = new Date(yr ? Number(yr) : now.getFullYear(), mo, day, 23, 59, 59);
+  if (!yr && d.getTime() < now.getTime() - 86400000) {
+    d = new Date(d.getFullYear() + 1, mo, day, 23, 59, 59); // past this year → next year
+  }
+  return isNaN(d) ? null : d.toISOString();
+}
+
+function parseRedditPrize(text = '') {
+  let max = 0;
+  for (const m of text.matchAll(/\$\s*([\d,]+(?:\.\d+)?)\s*([kKmM])\b/g)) {
+    let v = parseFloat(m[1].replace(/,/g, '')) || 0;
+    if (m[2]) v *= m[2].toLowerCase() === 'm' ? 1e6 : 1e3;
+    if (v > max && v < 1e7) max = v;
+  }
+  return max > 0
+    ? { usd: Math.round(max), display: `~$${Math.round(max).toLocaleString('en-US')} (theo bài đăng)` }
+    : { usd: 0, display: 'Xem thể lệ trên bài đăng' };
+}
+
+export function parsePullpushPosts(posts = [], sub) {
+  const results = [];
+  const now = Date.now();
+  for (const p of posts) {
+    if (!p || p.stickied || p.over_18) continue;
+    if (typeof p.created_utc === 'number' && now - p.created_utc * 1000 > REDDIT_MAX_AGE_MS) continue;
+    const flair = p.link_flair_text || '';
+    if (SKIP_FLAIR_RE.test(flair)) continue;
+    const title = stripHtml(p.title || '').trim();
+    if (!title || NON_LISTING_RE.test(title) || SPAM_TITLE_RE.test(title)) continue;
+    if (!HACKATHON_WORD_RE.test(`${title} ${flair}`)) continue;
+
+    // Honest rule: only list posts carrying a real external registration link.
+    let regUrl = null;
+    if (p.is_self === false && /^https?:\/\//i.test(p.url || '')) {
+      regUrl = p.url;
+    } else {
+      const m = String(p.selftext || '').match(/https?:\/\/[^\s)\]>"']+/i);
+      if (m) regUrl = m[0].replace(/[.,;!?'"’”]+$/, '');
+    }
+    if (!regUrl || NON_REG_LINK_RE.test(regUrl)) continue;
+
+    const blob = `${title} ${p.selftext || ''}`;
+    const deadline = parseRedditDate(blob);
+    const prize = parseRedditPrize(blob);
+    const looksOnline = /\b(online|virtual|remote|global)\b/i.test(blob);
+
+    results.push(
+      finalizeHackathon({
+        id: `reddit-${p.id}`,
+        platform: 'Reddit',
+        title,
+        organizer: `r/${sub}`,
+        url: regUrl,
+        thumbnail: /^https?:\/\//.test(p.thumbnail || '') ? p.thumbnail : null,
+        status: 'open',
+        startDate: typeof p.created_utc === 'number' ? new Date(p.created_utc * 1000).toISOString() : null,
+        deadline,
+        dateText: deadline ? '' : `Bài đăng trên r/${sub}`,
+        prizeUsd: prize.usd,
+        prizeDisplay: prize.display,
+        registrationsCount: null,
+        isOnline: looksOnline,
+        locationText: looksOnline ? 'Online' : '',
+        tags: ['Reddit', `r/${sub}`, flair].filter(Boolean),
+        summary:
+          stripHtml(p.selftext || '').slice(0, 280) ||
+          `Bài đăng hackathon trên r/${sub} — mở link để xem thể lệ & đăng ký.`
+      })
+    );
+  }
+  return results;
+}
+
+async function fetchReddit() {
+  // pullpush.io is a free community mirror — be gentle: sequential requests,
+  // spaced retries on 429s. Parallel hits get rate-limited instantly.
+  const map = new Map();
+  let ok = 0;
+  let lastErr = null;
+  for (const sub of REDDIT_SUBS) {
+    let posts = null;
+    for (let attempt = 0; attempt < 3 && !posts; attempt++) {
+      try {
+        if (attempt > 0) await new Promise((r) => setTimeout(r, attempt === 1 ? 6000 : 15000));
+        const raw = await fetchText(
+          `https://api.pullpush.io/reddit/search/submission/?subreddit=${sub}&size=50&sort=desc&sort_type=created_utc`,
+          { headers: { Accept: 'application/json' } },
+          20000
+        );
+        const data = JSON.parse(raw)?.data;
+        if (!Array.isArray(data)) throw new Error('Pullpush trả dữ liệu lạ');
+        posts = data;
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+    if (posts) {
+      ok++;
+      try {
+        for (const item of parsePullpushPosts(posts, sub)) map.set(item.id, item);
+      } catch {}
+    }
+    await new Promise((r) => setTimeout(r, 2500));
+  }
+  if (ok === 0) throw new Error(`Không thể kết nối Reddit (pullpush)${lastErr ? ': ' + lastErr.message : ''}`);
+  return [...map.values()];
+}
+
+// ============================================================================
 // MASTER AGGREGATOR
 // ============================================================================
 export async function scanAllGlobalHackathons() {
@@ -763,14 +947,20 @@ export async function scanAllGlobalHackathons() {
     { name: 'Devfolio', fn: fetchDevfolio },
     { name: 'MLH', fn: fetchMLH },
     { name: 'ETHGlobal', fn: fetchETHGlobal },
-    { name: 'DoraHacks', fn: fetchDoraHacks }
+    { name: 'DoraHacks', fn: fetchDoraHacks },
+    { name: 'Reddit', fn: fetchReddit }
   ];
 
   const startedAt = Date.now();
+  const SOURCE_TIMEOUT_MS = 90000;
   const settled = await Promise.allSettled(
     sources.map(async (s) => {
       const t0 = Date.now();
-      const items = await s.fn();
+      let timer;
+      const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Nguồn phản hồi quá chậm — timeout')), SOURCE_TIMEOUT_MS);
+      });
+      const items = await Promise.race([s.fn(), timeout]).finally(() => clearTimeout(timer));
       return { name: s.name, items, ms: Date.now() - t0 };
     })
   );

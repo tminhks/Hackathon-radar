@@ -194,8 +194,9 @@ function filterAndSortItems() {
   const list = getAllCombined().filter((h) => {
     const userSt = state.itemStates[h.id]?.status || 'none';
 
-    if (state.activeTab === 'hidden') return userSt === 'hidden';
+    if (state.activeTab === 'hidden') return userSt === 'hidden' || Boolean(h.blocked);
     if (userSt === 'hidden') return false;
+    if (h.blocked) return false;
 
     if (state.activeTab === 'gems' && !h.isHiddenGem) return false;
     if (state.activeTab === 'vn_travel' && !(h.isVietnam || h.hasTravelGrant)) return false;
@@ -296,10 +297,32 @@ function renderTopStats() {
   const millions = (totalPrize / 1_000_000).toFixed(2);
   document.getElementById('spotlightStats').textContent = `${all.length} Open · $${millions}M Total Pool`;
 
-  const okSources = (state.sourceStats || []).filter((s) => s.ok).map((s) => `${s.name} (${s.count})`);
-  if (okSources.length) {
-    document.getElementById('footerSummary').textContent = `Live synced: ${okSources.join(' · ')} — $${totalPrize.toLocaleString('en-US')} combined prize pool`;
+  const stats = state.sourceStats || [];
+  const health = state.scanHealth || {};
+  const srcParts = stats.map((s) => (s.ok ? `${s.name} (${s.count})` : `${s.name} ⚠`));
+  const scannedAgoMin = state.scannedAt
+    ? Math.round((Date.now() - new Date(state.scannedAt).getTime()) / 60000)
+    : null;
+  const isStale = scannedAgoMin === null ? stats.length > 0 : scannedAgoMin > 45;
+  const when = state.scannedAt
+    ? new Date(state.scannedAt).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
+    : 'chưa có';
+
+  let footer = `Quét ${when} · ${srcParts.join(' · ') || '—'} — $${totalPrize.toLocaleString('en-US')} combined prize pool`;
+  if (state.blockedCount > 0) {
+    footer += ` · Ẩn ${state.blockedCount} giải không đủ điều kiện`;
   }
+  if (health.consecutiveFailures > 0) {
+    footer += `  |  ⚠ Quét lỗi${health.consecutiveFailures > 1 ? ` ${health.consecutiveFailures} lần liên tiếp` : ''}: ${health.lastError || 'không rõ'}`;
+  } else if (health.lastError || isStale) {
+    footer += `  |  ⚠ ${health.lastError || 'Dữ liệu có thể đã cũ'}`;
+  }
+  document.getElementById('footerSummary').textContent = footer;
+
+  const dot = document.getElementById('liveDot');
+  dot.classList.toggle('stale', health.consecutiveFailures > 0 || (isStale && !document.getElementById('liveDot').classList.contains('scanning')));
+  const refreshBtn = document.getElementById('btnRefresh');
+  refreshBtn.title = `Quét gần nhất: ${when}${health.lastError ? ` — ${health.lastError}` : ''} · Bấm để quét lại 7 nguồn`;
 }
 
 function renderGrid() {
@@ -335,6 +358,8 @@ function renderGrid() {
               <span class="plat-pill">${escapeHtml(h.platform)}</span>
               ${h.isHiddenGem ? '<span class="micro-pill">Gem</span>' : ''}
               ${h.hasTravelGrant ? '<span class="micro-pill">Travel Grant</span>' : ''}
+              ${h.fullyFunded ? '<span class="micro-pill">Trọn gói</span>' : ''}
+              ${h.blocked ? `<span class="micro-pill blocked-pill" title="${escapeHtml(h.blockedReason || 'Không đủ điều kiện')}">⛔ Không đủ ĐK</span>` : ''}
             </div>
             <button type="button" class="bookmark-btn ${isSaved ? 'saved' : ''}" data-action="open-detail" data-id="${escapeHtml(h.id)}" title="Notes, Tracking & Calendar (.ICS)">
               <svg width="17" height="17" viewBox="0 0 24 24" fill="${isSaved ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="1.8">
@@ -424,6 +449,8 @@ function applyPayload(data) {
   state.itemStates = data.itemStates || {};
   state.newIds = new Set(data.newIds || []);
   state.sourceStats = data.sourceStats || [];
+  state.scanHealth = data.scanHealth || null;
+  state.blockedCount = data.blockedCount || 0;
   state.scannedAt = data.scannedAt || null;
   if (typeof data.unreadCount === 'number') {
     updateBellBadge(data.unreadCount);

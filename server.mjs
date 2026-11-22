@@ -7,13 +7,14 @@ import { scanAllGlobalHackathons, computeCompetitionAndScore, classifyCategories
 import { listGeminiModels, chatWithRadarAI, CURRENT_GEMINI_MODELS } from './src/gemini_chat.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PUBLIC_DIR = path.join(__dirname, 'public');
-const DATA_DIR = path.join(__dirname, 'data');
+const PUBLIC_DIR = process.env.RADAR_PUBLIC_DIR || path.join(__dirname, 'public');
+const DATA_DIR = process.env.RADAR_DATA_DIR || path.join(__dirname, 'data');
 const CACHE_FILE = path.join(DATA_DIR, 'cache.json');
 const STATE_FILE = path.join(DATA_DIR, 'user_state.json');
 
 const PORT = Number(process.env.PORT) || 4567;
 const AUTO_SCAN_INTERVAL_MS = 15 * 60 * 1000; // Scan global sources every 15 minutes
+const SCAN_TIMEOUT_MS = 150 * 1000; // Hard watchdog: a stuck scan must never leave the radar blind
 
 await fs.mkdir(DATA_DIR, { recursive: true });
 
@@ -52,6 +53,23 @@ let unreadCount = 0;
 let isScanning = false;
 let proactiveTimer = null;
 
+// Scan health — the "radar went silently blind" fix. Exposed via /api/hackathons.
+let scanHealth = {
+  lastAttemptAt: null,
+  lastSuccessAt: null,
+  lastError: null,
+  consecutiveFailures: 0,
+  lastAttemptStats: null
+};
+
+function withTimeout(promise, ms, message) {
+  let t;
+  const timeout = new Promise((_, reject) => {
+    t = setTimeout(() => reject(new Error(message)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(t));
+}
+
 async function loadDiskData() {
   try {
     const rawCache = await fs.readFile(CACHE_FILE, 'utf8');
@@ -88,6 +106,7 @@ async function saveState() {
  */
 function fireDirectWindowsToast(title, message) {
   if (process.platform !== 'win32') return;
+  if (process.env.RADAR_EMBEDDED === '1') return; // Electron main process owns native notifications
   const safeTitle = String(title).replace(/'/g, "''").slice(0, 90);
   const safeMsg = String(message).replace(/'/g, "''").slice(0, 200);
   const psScript = `
@@ -139,6 +158,7 @@ function getAllActiveHackathons() {
   return all.filter((h) => {
     const st = userState.items?.[h.id]?.status || 'none';
     if (st === 'hidden') return false;
+    if (h.blocked) return false;
     if (h.deadline && new Date(h.deadline).getTime() < now) return false;
     return true;
   });
@@ -257,51 +277,103 @@ function restartProactiveSchedule() {
 async function performScan() {
   if (isScanning) return cache;
   isScanning = true;
+  scanHealth.lastAttemptAt = new Date().toISOString();
   try {
     console.log(`[Radar] Đang quét các sàn Hackathon toàn cầu...`);
-    const result = await scanAllGlobalHackathons();
-    if (result.hackathons.length > 0) {
-      const prevSeen = new Set(userState.seenIds || []);
-      const freshNewItems = [];
-      for (const h of result.hackathons) {
-        if (prevSeen.size > 0 && !prevSeen.has(h.id)) {
-          freshNewItems.push(h);
-        }
-        prevSeen.add(h.id);
-      }
-      userState.seenIds = [...prevSeen].slice(-3000);
-      if (freshNewItems.length > 0) {
-        userState.newIds = [...new Set([...freshNewItems.map((x) => x.id), ...(userState.newIds || [])])].slice(0, 100);
-      }
-      cache = result;
-      await saveCache();
-      await saveState();
-      console.log(`[Radar] Hoàn tất trong ${result.durationMs}ms — Tìm thấy ${result.hackathons.length} giải đang mở!`);
+    const result = await withTimeout(
+      scanAllGlobalHackathons(),
+      SCAN_TIMEOUT_MS,
+      `Quét vượt quá ${Math.round(SCAN_TIMEOUT_MS / 1000)}s — bị treo`
+    );
+    scanHealth.lastAttemptStats = result.sourceStats;
 
-      const cfg = userState.notifySettings || DEFAULT_NOTIFY_SETTINGS;
-      if (cfg.enabled) {
-        if (freshNewItems.length > 0 && cfg.types?.newEvents) {
-          const topNew = freshNewItems[0];
-          pushNotification({
-            title: `🆕 Phát hiện ${freshNewItems.length} giải Hackathon mới!`,
-            message: `Nổi bật: ${topNew.title} (${topNew.prizeDisplay} · ${topNew.platform})`,
-            url: topNew.url,
-            tag: 'new'
-          });
-        } else if (cfg.types?.scanPulse) {
-          const totalPrize = result.hackathons.reduce((s, h) => s + (h.prizeUsd || 0), 0);
-          pushNotification({
-            title: `📡 Radar đã quét mới ${result.hackathons.length} giải toàn cầu`,
-            message: `Tổng quỹ thưởng $${(totalPrize / 1_000_000).toFixed(2)}M từ 6 sàn quốc tế — Bấm để xem Kèo Thơm!`,
-            url: 'http://127.0.0.1:4567',
-            tag: 'pulse'
-          });
+    // A source that errors OR returns 0 items is suspicious — preserve its
+    // previously-cached items so the radar never silently loses a platform.
+    const failedNames = new Set();
+    for (const s of result.sourceStats) {
+      if (!s.ok || s.count === 0) {
+        failedNames.add(s.name);
+        if (s.ok) {
+          s.ok = false;
+          s.error = 'Nguồn trả về 0 kết quả (nghi lỗi)';
         }
+        s.preserved = true;
+        console.warn(`[Radar] ⚠ Nguồn ${s.name} lỗi: ${s.error || 'không rõ'}`);
+      }
+    }
+    if (failedNames.size > 0 && cache.hackathons?.length) {
+      const newIds = new Set(result.hackathons.map((h) => h.id));
+      let preserved = 0;
+      for (const h of cache.hackathons) {
+        if (failedNames.has(h.platform) && !newIds.has(h.id)) {
+          result.hackathons.push(h);
+          preserved++;
+        }
+      }
+      if (preserved > 0) {
+        console.log(`[Radar] Giữ lại ${preserved} giải từ nguồn đang lỗi: ${[...failedNames].join(', ')}`);
+      }
+    }
+
+    if (!result.hackathons.length) {
+      throw new Error('Quét trả về 0 giải — toàn bộ nguồn lỗi hoặc mạng bị chặn');
+    }
+
+    const prevSeen = new Set(userState.seenIds || []);
+    const freshNewItems = [];
+    for (const h of result.hackathons) {
+      if (prevSeen.size > 0 && !prevSeen.has(h.id)) {
+        freshNewItems.push(h);
+      }
+      prevSeen.add(h.id);
+    }
+    userState.seenIds = [...prevSeen].slice(-3000);
+    if (freshNewItems.length > 0) {
+      userState.newIds = [...new Set([...freshNewItems.map((x) => x.id), ...(userState.newIds || [])])].slice(0, 100);
+    }
+    cache = result;
+    await saveCache();
+    await saveState();
+    scanHealth.lastSuccessAt = result.scannedAt;
+    scanHealth.consecutiveFailures = 0;
+    scanHealth.lastError = failedNames.size ? `Nguồn lỗi: ${[...failedNames].join(', ')}` : null;
+    console.log(`[Radar] Hoàn tất trong ${result.durationMs}ms — Tìm thấy ${result.hackathons.length} giải đang mở!`);
+
+    const cfg = userState.notifySettings || DEFAULT_NOTIFY_SETTINGS;
+    if (cfg.enabled) {
+      if (freshNewItems.length > 0 && cfg.types?.newEvents) {
+        const topNew = freshNewItems[0];
+        pushNotification({
+          title: `🆕 Phát hiện ${freshNewItems.length} giải Hackathon mới!`,
+          message: `Nổi bật: ${topNew.title} (${topNew.prizeDisplay} · ${topNew.platform})`,
+          url: topNew.url,
+          tag: 'new'
+        });
+      } else if (cfg.types?.scanPulse) {
+        const totalPrize = result.hackathons.reduce((s, h) => s + (h.prizeUsd || 0), 0);
+        pushNotification({
+          title: `📡 Radar đã quét mới ${result.hackathons.length} giải toàn cầu`,
+          message: `Tổng quỹ thưởng $${(totalPrize / 1_000_000).toFixed(2)}M từ 7 nguồn toàn cầu — Bấm để xem Kèo Thơm!`,
+          url: 'http://127.0.0.1:4567',
+          tag: 'pulse'
+        });
       }
     }
     return cache;
   } catch (err) {
-    console.error(`[Radar] Lỗi khi quét:`, err.message);
+    scanHealth.consecutiveFailures++;
+    scanHealth.lastError = err.message || 'Lỗi không rõ';
+    console.error(
+      `[Radar] ❌ Quét thất bại (lần liên tiếp ${scanHealth.consecutiveFailures}): ${scanHealth.lastError} — giữ nguyên ${cache.hackathons?.length || 0} giải từ cache cũ.`
+    );
+    if (scanHealth.consecutiveFailures === 1) {
+      pushNotification({
+        title: '⚠️ Radar quét thất bại',
+        message: `${scanHealth.lastError} — vẫn hiển thị ${cache.hackathons?.length || 0} giải từ lần quét trước.`,
+        url: 'http://127.0.0.1:4567',
+        tag: 'error'
+      });
+    }
     return cache;
   } finally {
     isScanning = false;
@@ -350,9 +422,12 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && pathname === '/api/hackathons') {
       return sendJson(res, 200, {
         ...cache,
+        sourceStats: scanHealth.lastAttemptStats || cache.sourceStats || [],
+        scanHealth,
         customHackathons: userState.customHackathons || [],
         itemStates: userState.items || {},
         newIds: userState.newIds || [],
+        blockedCount: (cache.hackathons || []).filter((h) => h.blocked).length,
         notifySettings: userState.notifySettings || DEFAULT_NOTIFY_SETTINGS,
         unreadCount,
         isScanning
@@ -488,9 +563,12 @@ const server = http.createServer(async (req, res) => {
       await performScan();
       return sendJson(res, 200, {
         ...cache,
+        sourceStats: scanHealth.lastAttemptStats || cache.sourceStats || [],
+        scanHealth,
         customHackathons: userState.customHackathons || [],
         itemStates: userState.items || {},
         newIds: userState.newIds || [],
+        blockedCount: (cache.hackathons || []).filter((h) => h.blocked).length,
         unreadCount,
         isScanning
       });
@@ -585,6 +663,11 @@ const server = http.createServer(async (req, res) => {
   } catch (err) {
     sendJson(res, 500, { error: err.message });
   }
+});
+
+server.once('error', (err) => {
+  console.error(`[Radar] Không thể mở cổng ${PORT}: ${err.code || err.message}`);
+  process.exit(1);
 });
 
 server.listen(PORT, '127.0.0.1', () => {

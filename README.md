@@ -1,18 +1,72 @@
-# 📡 Global Hackathon Radar — Desktop & Web Edition
+# HACKATHON RADAR — APP WINDOWS (BẢN ELECTRON)
 
-Ứng dụng săn giải Hackathon toàn cầu theo thời gian thực với giao diện **Apple Space Black Titanium** và hệ thống **Thông Báo Gốc Trên Máy Tính Windows (System Tray + Native Toast)**.
+Đây là app thật, có cửa sổ riêng, không phải file chạy nền nữa.
+Chỉ có 1 file duy nhất: HackathonRadar.exe. Không cần cài đặt, không cần Node.js.
 
-## 🖥️ Cách chạy như Ứng Dụng Desktop Windows thực thụ
-1. **Cài đặt 1 chạm (Tạo icon ngoài Desktop + Tự khởi động ngầm cùng Windows):**
-   - Nhấp đúp vào file `Install-Desktop-And-Startup.bat` trong thư mục dự án.
-2. **Hoặc mở trực tiếp file ứng dụng `.exe`:**
-   - Nhấp đúp vào **`HackathonRadar.exe`** (bạn có thể chuột phải chọn *Pin to taskbar* để ghim thẳng lên thanh Taskbar Windows).
-   - Ứng dụng sẽ mở trong **cửa sổ App độc lập** (không thanh địa chỉ trình duyệt), đồng thời thu nhỏ biểu tượng Radar xuống **Khay hệ thống (System Tray)** góc dưới bên phải cạnh đồng hồ.
+## CÁCH DÙNG
 
-## 🔔 Hệ thống Thông Báo Tần Suất Cao
-- Mặc định cứ **3 phút / lần** (có thể chỉnh lên **Siêu dày: 1 phút / lần** ở biểu tượng Chuông 🔔 trên giao diện hoặc chuột phải vào icon dưới khay hệ thống Windows), ứng dụng sẽ chủ động bắn thông báo góc màn hình Windows:
-  - 🆕 **Giải mới vừa mở đăng ký** trên 6 sàn quốc tế (*Devpost, MLH, ETHGlobal, Devfolio, Unstop, DoraHacks*).
-  - 💎 **Xoay vòng gợi ý Kèo Thơm** (giải thưởng lớn nhưng ít đối thủ đăng ký).
-  - ⏳ **Cảnh báo gấp sắp hết hạn (`< 48h`)** cho các siêu giải và giải bạn đã lưu.
-  - 🇻🇳 **Giải tại Việt Nam & ✈️ Giải quốc tế có Travel Grant**.
-  - **Bấm trực tiếp vào khung thông báo Windows** sẽ mở thẳng trang đăng ký của giải đó!
+1. Copy file HackathonRadar.exe vào một thư mục trong tài khoản của bạn,
+   ví dụ: `C:\Users\<tên bạn>\HackathonRadar\`
+   (Đừng để ở thư mục dùng chung, để trong thư mục của riêng bạn.)
+2. Double-click file exe. Lần đầu chạy, app tự quét 7 nguồn (Devpost, Unstop,
+   Devfolio, MLH, ETHGlobal, DoraHacks, Reddit) mất vài giây rồi mở dashboard
+   trong cửa sổ riêng của app.
+3. Muốn mở lại dashboard lúc nào thì double-click file exe lần nữa,
+   hoặc bấm vào icon Radar ở khay hệ thống (góc dưới phải màn hình).
+
+## LƯU Ý LẦN ĐẦU CHẠY
+
+- Windows sẽ hiện cảnh báo SmartScreen vì app chưa có chữ ký số.
+  Bấm "More info" rồi "Run anyway" là chạy được.
+- Nếu bạn còn đang chạy file exe console cũ (bản đen xì trước đây) thì
+  tắt nó đi trước, vì 2 app không dùng chung cổng được. Nếu quên thì
+  app mới sẽ tự báo lỗi cổng bận.
+
+## KHAY HỆ THỐNG (TRAY)
+
+Bấm chuột phải vào icon Radar ở khay hệ thống để thấy menu:
+
+- **Open Dashboard**: mở lại cửa sổ dashboard.
+- **Refresh Now**: quét lại ngay 7 nguồn, không cần đợi 15 phút.
+- **Start with Windows**: bật/tắt tự chạy khi đăng nhập. Chỉ áp dụng cho
+  tài khoản Windows của riêng bạn, các tài khoản khác trên máy không
+  bị ảnh hưởng và không thấy app.
+- **Quit**: thoát hẳn app.
+
+Đóng cửa sổ (bấm X) thì app không thoát mà ẩn xuống khay và vẫn quét
+nền mỗi 15 phút, có giải mới sẽ hiện thông báo.
+
+## TRONG APP
+
+- Đầy đủ giao diện gốc của Radar: hero, lọc, tìm kiếm (Ctrl+K), chi tiết
+  giải, lưu giải, ghi chú, thêm giải tự tạo.
+- Nút "Register" mở trang đăng ký trong trình duyệt của bạn.
+- Radar AI (ngăn kéo Gemini): nhập Gemini API key của bạn vào trong app
+  (lấy miễn phí tại Google AI Studio). Key chỉ lưu trên máy bạn.
+- Dữ liệu (cache giải, giải đã lưu, ghi chú, key Gemini) được lưu riêng
+  theo tài khoản Windows của bạn, trong `%APPDATA%\Hackathon Radar`,
+  nên không mất khi di chuyển file exe và người khác không đọc được.
+
+## GỠ BỎ
+
+Chỉ cần xóa file exe là xong. Muốn xóa sạch cả dữ liệu thì xóa thêm
+thư mục `%APPDATA%\Hackathon Radar`.
+
+---
+
+## Dành cho dev (build từ source)
+
+```bash
+npm install
+npm run dev:app   # chạy thử bằng electron
+npm run dist      # build ra dist/HackathonRadar.exe (portable, 1 file)
+```
+
+Cấu trúc:
+
+- `electron/main.cjs` — tiến trình chính Electron (cửa sổ, tray, thông báo,
+  kiểm tra cổng bận, Start with Windows).
+- `server.mjs` + `src/` — backend Node quét 7 nguồn + API + phục vụ dashboard,
+  chạy như process con của app (qua `ELECTRON_RUN_AS_NODE`), đọc
+  `RADAR_DATA_DIR` để ghi dữ liệu vào `%APPDATA%\Hackathon Radar`.
+- `public/` — giao diện dashboard.
